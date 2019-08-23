@@ -32,33 +32,45 @@ import chaudfontaine
 CONNECTION_DETAILS = "dbname='meuse' user='postgres' password='password' host='localhost' port='5555'"
 GECKO_PATH = '../geckodriver/geckodriver'
 
-options = webdriver.firefox.options.Options()
-options.headless = False
+def start_driver():
+    """"
+    gets the selenium webdriver going.
+    returns: driver object ref
+    """
+    options = webdriver.firefox.options.Options()
+    options.headless = False
+    driver = webdriver.Firefox(firefox_options=options, executable_path = GECKO_PATH)
+    return driver
 
-loginpage = f"http://aqualim.environnement.wallonie.be"
-# print(loginpage)
+def quit_driver(driver):
+    """
+    closes selenium webdriver object
+    parameter: driver ref
+    """
+    driver.quit()
 
-listpage = "http://aqualim.environnement.wallonie.be/GeneralPages.do?method=displayStationsList"
-# print(listpage)
-
-
-def get_stations_www():
+def get_stations_www(driver):
     """
     Creates a dataframe with all available Aqualim stations.
+        parameter: driver (selenium webdriver object instance)
+        returns: dataframe
     """
-    driver = webdriver.Firefox(firefox_options=options, executable_path = GECKO_PATH)
+    loginpage = f"http://aqualim.environnement.wallonie.be"
+    # print(loginpage)
+
+    listpage = "http://aqualim.environnement.wallonie.be/GeneralPages.do?method=displayStationsList"
+    # print(listpage)
 
     driver.get(loginpage)
     driver.get(listpage)
 
+    # browser is now looking at a paginated list/table, we select the "Tout" option from the list to show all rows in the table
     select_datatable_length = webdriver.support.ui.Select(driver.find_element_by_name("dataTable_length"))
+    # select_datatable_length.select_by_visible_text("Tout")
     select_datatable_length.select_by_value("-1")
 
     datatable = driver.find_element_by_id("dataTable")
-
     df = pd.read_html(datatable.get_attribute('outerHTML'), index_col=3)
-    driver.quit()
-
     return df
 
 def parseMesure(soup):
@@ -129,62 +141,78 @@ def parseMesure(soup):
 
     return stationDetails
 
-def retrieveMesure(combi_code):
+def retrieveMesure(driver, stationCode):
     """
     Contacts webserver for station details.
     Returns station details as created by parseMesure()
-    Parameter: station code string (4 digit station identifier + 4 digit quantity code)
+    Parameters: 
+        driver (selenium webdriver object instance)
+        station code string (5 digit station identifier starting with capital L)
     """
 
-    # we ask the website for printable output (xt=prt) because it is cleaner and easier to parse
-    this_url = f'http://voies-hydrauliques.wallonie.be/opencms/opencms/fr/hydro/Actuelle/crue/mesure.jsp?code={combi_code}&xt=prt'
+    #  http://aqualim.environnement.wallonie.be/Station.do?method=selectStation&time=1566558553855&station=L6510
+    stationpage = f'http://aqualim.environnement.wallonie.be/Station.do?method=selectStation&station={stationCode}'
     stationDetails = None
+    driver.get(stationpage)
 
-    # define a request object
-    req = Request(this_url)
-    try:
-        # open the http connection with the server
-        _ = urlopen(req)
-    # catch a few observed exceptions
-    except HTTPError as e:
-        print(f'skipping {combi_code} cuz http Error code: ', e.code)
-    except URLError as e:
-        print(f'skipping {combi_code} cuz url Reason: ', e.reason)
-    else:
-        # read the raw html from the connection (sauce in BeautifulSoup parlance)
-        sauce = urlopen(this_url).read()
-        # parse the sauce into soup
-        soup = bs.BeautifulSoup(sauce, 'lxml')
-        # parse the soup into a JSON object (or None)
-        stationDetails = parseMesure(soup)
-        if stationDetails == None:
-            print(this_url)
+
+    ## NB: station details are in a pdf to be retrieved from stationpage TODO
+
+    ## NB the following downloadpage leads to measurements, not details, please move code to 
+    ## appropriate function TODO
+    
+    # http://aqualim.environnement.wallonie.be/StationGraph.do?method=displayGraphSelection&time=2019-08-23%2013:23:34.928
+    # http://aqualim.environnement.wallonie.be/Station.do?method=displayDownloadData&sParam=DEBIT&typeGraph=GRAPH_HORAIRE&dateDebut=01/08/2019&dateFin=22/08/2019&time=1566559496342
+    downloadpage = f'http://aqualim.environnement.wallonie.be/Station.do?method=displayDownloadData'
+    downloadpage += f'&sParam=DEBIT'
+    downloadpage += f'&typeGraph=GRAPH_HORAIRE'
+    downloadpage += f'&dateDebut=01/08/2019&dateFin=22/08/2019'
+    driver.get(downloadpage)
+
+    # userform = driver.find_element_by_name("UserForm")
+    # print(userform)
+    personalia = {
+        "nom": "last name",
+        "prenom": "first name",
+        "societe": "company or organisation",
+        "rue": "street",
+        "numero": "house number",
+        "codepostal": "postal code",
+        "localite": "city",
+        "pays": "country",
+        "telephone": "international phone number",
+        "email": "email",
+        "commentaire": "reason for downloading",
+    }
+
+    for id, personal in personalia.items():
+        field = driver.find_element_by_id(id)
+        field.send_text(personal)
+
+    driver.find_element_by_id("dateDebut").send_text("01/01/2018")
+    driver.find_element_by_id("dateFin").send_text("31/12/2018")
+
+    # submit
+
 
     return stationDetails
 
-def retrieveStations(stationCodes, wantedQuantity):
+def retrieveStations(stationCodes):
     """
     Returns a new df with all stations in the given list 
     with all their yummy details.
     parameters:
-     stations_Codes: list of strings representing 4-digit station codes
-     wantedQuantity: string (one of the keys in dict QUANTITY_CODES)
+     stationCodes: list of strings representing 4-digit station codes
     """
-    print(f'retrieving details for {len(stationCodes)} stations with {wantedQuantity} sensor...')
-    # translate french word into string (4 digit code)
-    wantedQuantityCode = QUANTITY_CODES[wantedQuantity]
+    print(f'retrieving details for {len(stationCodes)} stations...')
     # start an empty dataframe
     df = pd.DataFrame(index=stationCodes)
     df.index.name = 'code'
 
     # iterate over all requested stationCodes
     for stationCode in stationCodes:
-        # combine the two codes into one 8 digit code
-        combi_code = f'{stationCode}{wantedQuantityCode}'
-        print(combi_code)
-
         # do the actual scraping
-        stationDetailsString = retrieveMesure(combi_code)
+        stationDetailsString = retrieveMesure(stationCode)
         # store in the df the station details in a string as they came to us
         df.loc[stationCode, 'stationDetails'] = stationDetailsString
 
@@ -371,16 +399,5 @@ def insert_records_station(df, station_type):
     conn.close()
     print("connection closed")
 
-def scrape_stations(stations_www, station_type):
-    """
-    Scrapes website for stationdetails.
-    Parameters:
-        stations_www: dataframe holding a list of stations of all types
-        station_type: requested type of station
-    """
-    print("scrape")
-    codes = stations_www.index[stations_www[station_type] == station_type]
-    df = retrieveStations(codes, station_type)
-    print(f"retrieved {len(df)} stations of type {station_type}")
-    return df
+
 
